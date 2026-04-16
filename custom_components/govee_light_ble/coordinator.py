@@ -6,6 +6,12 @@ from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import (
+    BluetoothCallbackMatcher,
+    BluetoothChange,
+    BluetoothScanningMode,
+    BluetoothServiceInfoBleak,
+)
 
 from .const import DOMAIN
 from .api import GoveeAPI
@@ -43,6 +49,15 @@ class GoveeCoordinator(DataUpdateCoordinator):
         assert ble_device
         self._api = GoveeAPI(ble_device, self._async_push_data, self.device_segmented)
 
+        config_entry.async_on_unload(
+            bluetooth.async_register_callback(
+                hass,
+                self._async_ble_device_update,
+                BluetoothCallbackMatcher(address=self.device_address),
+                BluetoothScanningMode.PASSIVE,
+            )
+        )
+
         # Initialise DataUpdateCoordinator
         super().__init__(
             hass,
@@ -54,6 +69,9 @@ class GoveeCoordinator(DataUpdateCoordinator):
             # You can remove this line but left here for explanatory purposes.
             update_interval=timedelta(seconds=15)
         )
+
+    def _async_ble_device_update(self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange) -> None:
+        self._api.update_ble_device(service_info.device)
 
     def _get_data(self):
         return GoveeApiData(

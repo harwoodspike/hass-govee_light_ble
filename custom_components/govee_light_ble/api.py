@@ -34,6 +34,9 @@ class GoveeAPI:
     def address(self):
         return self._ble_device.address
 
+    def update_ble_device(self, ble_device: BLEDevice) -> None:
+        self._ble_device = ble_device
+
     async def _ensureConnected(self):
         """ connects to a bluetooth device """
         if self._client != None and self._client.is_connected:
@@ -100,13 +103,16 @@ class GoveeAPI:
     async def sendPacketBuffer(self):
         """ transmits all buffered data """
         if not self._packet_buffer:
-            #nothing to do
             return None
-        await self._ensureConnected()
-        for packet in self._packet_buffer:
-            await self._transmitPacket(packet)
-        await self._clearPacketBuffer()
-        #not disconnecting seems to improve connection speed
+        try:
+            await self._ensureConnected()
+            for packet in self._packet_buffer:
+                await self._transmitPacket(packet)
+        except Exception:
+            self._client = None
+            raise
+        finally:
+            await self._clearPacketBuffer()
 
     async def requestStateBuffered(self):
         """ adds a request for the current power state to the transmit buffer """
