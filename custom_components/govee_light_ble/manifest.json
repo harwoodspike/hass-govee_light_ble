@@ -6,12 +6,12 @@
         { "local_name": "ihoment_*", "connectable": false },
         { "local_name": "GBK_*", "connectable": false }
     ],
-    "codeowners": ["@timniklas"],
+    "codeowners": ["@harwoodspike"],
     "config_flow": true,
     "dependencies": ["bluetooth"],
-    "documentation": "https://github.com/timniklas/hass-govee-bluetooth-lights",
+    "documentation": "https://github.com/harwoodspike/hass-govee-bluetooth-lights",
     "iot_class": "local_polling",
-    "issue_tracker": "https://github.com/timniklas/hass-govee-bluetooth-lights/issues",
+    "issue_tracker": "https://github.com/harwoodspike/hass-govee-bluetooth-lights/issues",
     "requirements": ["bleak-retry-connector"],
     "version": "0.0.0"
 }
