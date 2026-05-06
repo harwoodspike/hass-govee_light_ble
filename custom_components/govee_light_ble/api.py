@@ -39,12 +39,26 @@ class GoveeAPI:
 
     async def _ensureConnected(self):
         """ connects to a bluetooth device """
-        if self._client != None and self._client.is_connected:
+        if self._client is not None and self._client.is_connected:
             return None
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
         await self._connect()
-    
+
     async def _connect(self):
-        self._client = await bleak_retry_connector.establish_connection(BleakClient, self._ble_device, self.address)
+        def _disconnected(client: BleakClient) -> None:
+            self._client = None
+
+        self._client = await bleak_retry_connector.establish_connection(
+            BleakClient,
+            self._ble_device,
+            self.address,
+            disconnected_callback=_disconnected
+        )
         await self._client.start_notify(READ_CHARACTERISTIC_UUID, self._handleReceive)
 
     async def _transmitPacket(self, packet: LedPacket):
