@@ -124,6 +124,7 @@ class GoveeAPI:
 
     async def sendPacketBuffer(self):
         """ transmits all buffered data """
+        _LOGGER.debug("sendPacketBuffer called for %s with %d packets", self.address, len(self._packet_buffer))
         if not self._packet_buffer:
             return None
         if self._slot_backoff_until is not None:
@@ -149,7 +150,8 @@ class GoveeAPI:
                     int(_SLOT_BACKOFF_DURATION.total_seconds() // 60)
                 )
             raise
-        except Exception:
+        except Exception as err:
+            _LOGGER.error("Error communicating with %s: %s", self.address, err, exc_info=True)
             client = self._client
             self._client = None
             if client is not None:
