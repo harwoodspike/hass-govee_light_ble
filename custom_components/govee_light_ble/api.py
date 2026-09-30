@@ -7,6 +7,8 @@ from bleak import (
     BLEDevice
 )
 from datetime import datetime, timedelta
+from homeassistant.core import HomeAssistant
+from homeassistant.components import bluetooth
 from .const import WRITE_CHARACTERISTIC_UUID, READ_CHARACTERISTIC_UUID
 from .api_utils import (
     LedPacketHead,
@@ -28,8 +30,9 @@ class GoveeAPI:
     brightness: int | None = None
     color: tuple[int, ...] | None = None
 
-    def __init__(self, ble_device: BLEDevice, update_callback, segmented: bool = False):
+    def __init__(self, hass: HomeAssistant, ble_device: BLEDevice, update_callback, segmented: bool = False):
         self._conn = None
+        self._hass = hass
         self._ble_device = ble_device
         self._segmented = segmented
         self._packet_buffer = []
@@ -38,6 +41,7 @@ class GoveeAPI:
         self._update_callback = update_callback
         self._slot_error_count = 0
         self._slot_backoff_until: datetime | None = None
+        self._lock = asyncio.Lock()
 
     @property
     def address(self):
@@ -74,9 +78,13 @@ class GoveeAPI:
                 self._client = None
                 self._connected_at = None
 
+        connectable_device = bluetooth.async_ble_device_from_address(
+            self._hass, self.address, connectable=True
+        ) or self._ble_device
+
         self._client = await bleak_retry_connector.establish_connection(
             BleakClient,
-            self._ble_device,
+            connectable_device,
             self.address,
             disconnected_callback=_disconnected
         )
@@ -142,50 +150,58 @@ class GoveeAPI:
         for _ in range(repeat):
             self._packet_buffer.append(packet)
 
-    async def _clearPacketBuffer(self):
-        """ clears the packet buffer """
-        self._packet_buffer = []
-
     async def sendPacketBuffer(self):
         """ transmits all buffered data """
-        _LOGGER.debug("sendPacketBuffer called for %s with %d packets", self.address, len(self._packet_buffer))
-        if not self._packet_buffer:
-            return None
-        if self._slot_backoff_until is not None:
-            now = datetime.now()
-            if now < self._slot_backoff_until:
-                remaining = int((self._slot_backoff_until - now).total_seconds())
-                _LOGGER.debug("Proxy slot backoff active, skipping for %ds more", remaining)
-                await self._clearPacketBuffer()
+        async with self._lock:
+            _LOGGER.debug("sendPacketBuffer called for %s with %d packets", self.address, len(self._packet_buffer))
+            if not self._packet_buffer:
                 return None
-            self._slot_backoff_until = None
-        try:
-            await self._ensureConnected()
-            for packet in self._packet_buffer:
-                await self._transmitPacket(packet)
-            self._slot_error_count = 0
-        except BleakOutOfConnectionSlotsError:
-            self._slot_error_count += 1
-            _LOGGER.warning("No proxy connection slots available (consecutive errors: %d)", self._slot_error_count)
-            if self._slot_error_count >= _SLOT_ERROR_THRESHOLD:
-                self._slot_backoff_until = datetime.now() + _SLOT_BACKOFF_DURATION
-                _LOGGER.warning(
-                    "Backing off for %d minutes after repeated slot exhaustion",
-                    int(_SLOT_BACKOFF_DURATION.total_seconds() // 60)
-                )
-            raise
-        except Exception as err:
-            _LOGGER.error("Error communicating with %s: %s", self.address, err, exc_info=True)
-            client = self._client
-            self._client = None
-            if client is not None:
+            if self._slot_backoff_until is not None:
+                now = datetime.now()
+                if now < self._slot_backoff_until:
+                    remaining = int((self._slot_backoff_until - now).total_seconds())
+                    _LOGGER.debug("Proxy slot backoff active, skipping for %ds more", remaining)
+                    self._packet_buffer = []
+                    return None
+                self._slot_backoff_until = None
+            packets, self._packet_buffer = self._packet_buffer, []
+            try:
+                await self._ensureConnected()
+                for packet in packets:
+                    await self._transmitPacket(packet)
+                self._slot_error_count = 0
+            except BleakOutOfConnectionSlotsError:
+                self._slot_error_count += 1
+                _LOGGER.warning("No proxy connection slots available (consecutive errors: %d)", self._slot_error_count)
+                if self._slot_error_count >= _SLOT_ERROR_THRESHOLD:
+                    self._slot_backoff_until = datetime.now() + _SLOT_BACKOFF_DURATION
+                    _LOGGER.warning(
+                        "Backing off for %d minutes after repeated slot exhaustion",
+                        int(_SLOT_BACKOFF_DURATION.total_seconds() // 60)
+                    )
+                raise
+            except Exception as err:
+                _LOGGER.error("Error communicating with %s: %s", self.address, err, exc_info=True)
+                client = self._client
+                self._client = None
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                raise
+
+    async def disconnect(self):
+        """ disconnects the BLE client, guarded by the same lock as sendPacketBuffer """
+        async with self._lock:
+            if self._client is not None:
+                client = self._client
+                self._client = None
+                self._connected_at = None
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
-            raise
-        finally:
-            await self._clearPacketBuffer()
 
     async def requestStateBuffered(self):
         """ adds a request for the current power state to the transmit buffer """

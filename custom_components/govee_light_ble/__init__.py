@@ -72,7 +72,11 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
     # If you have created any custom services, they need to be removed here too.
 
     # Remove the config options update listener
-    hass.data[DOMAIN][config_entry.entry_id].cancel_update_listener()
+    runtime_data = hass.data[DOMAIN][config_entry.entry_id]
+    runtime_data.cancel_update_listener()
+
+    # Disconnect the BLE client before tearing down platforms
+    await runtime_data.coordinator.disconnect()
 
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(

@@ -47,7 +47,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
             connectable=False
         )
         assert ble_device
-        self._api = GoveeAPI(ble_device, self._async_push_data, self.device_segmented)
+        self._api = GoveeAPI(hass, ble_device, self._async_push_data, self.device_segmented)
 
         config_entry.async_on_unload(
             bluetooth.async_register_callback(
@@ -67,7 +67,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
             update_method=self._async_update_data,
             # Do not set a polling interval as data will be pushed.
             # You can remove this line but left here for explanatory purposes.
-            update_interval=timedelta(seconds=60)
+            update_interval=timedelta(minutes=5)
         )
 
     def _async_ble_device_update(self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange) -> None:
@@ -106,3 +106,6 @@ class GoveeCoordinator(DataUpdateCoordinator):
 
     async def sendPacketBuffer(self):
         await self._api.sendPacketBuffer()
+
+    async def disconnect(self):
+        await self._api.disconnect()
