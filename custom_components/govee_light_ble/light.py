@@ -78,7 +78,7 @@ class GoveeBluetoothLight(CoordinatorEntity, LightEntity):
         if ATTR_BRIGHTNESS in kwargs:
             brightness = kwargs.get(ATTR_BRIGHTNESS, 255) #1-255
             brightness_mapped = num_to_range(brightness, 1, 255, 0, 255) #mapping from 1-255 to 0-255
-            await self.coordinator.setBrightnessBuffered(brightness_mapped)
+            await self.coordinator.setBrightnessBuffered(round(brightness_mapped))
 
         if ATTR_RGB_COLOR in kwargs:
             red, green, blue = kwargs.get(ATTR_RGB_COLOR)

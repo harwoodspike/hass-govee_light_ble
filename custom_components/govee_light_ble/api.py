@@ -24,6 +24,10 @@ _LOGGER = logging.getLogger(__name__)
 _SLOT_ERROR_THRESHOLD = 2
 _SLOT_BACKOFF_DURATION = timedelta(minutes=5)
 _MAX_CONNECTION_AGE = timedelta(hours=1)
+# Some models (e.g. H613C fw 1.07.04) drop the first write after notifications are enabled,
+# and back-to-back write-without-response frames get dropped too, so pace the link.
+_POST_CONNECT_SETTLE = 0.3
+_INTER_PACKET_DELAY = 0.05
 
 class GoveeAPI:
     state: bool | None = None
@@ -36,6 +40,8 @@ class GoveeAPI:
         self._ble_device = ble_device
         self._segmented = segmented
         self._packet_buffer = []
+        # values from buffered commands, applied once the buffer is actually transmitted
+        self._pending: dict[str, object] = {}
         self._client = None
         self._connected_at: datetime | None = None
         self._update_callback = update_callback
@@ -99,6 +105,7 @@ class GoveeAPI:
                 pass
             raise
         self._connected_at = datetime.now()
+        await asyncio.sleep(_POST_CONNECT_SETTLE)
 
     async def _transmitPacket(self, packet: LedPacket):
         """ transmit the actiual packet """
@@ -114,11 +121,15 @@ class GoveeAPI:
                 self.state = packet.payload[0] == 0x01
             case LedPacketCmd.BRIGHTNESS:
                 #segmented devices 0-100
-                self.brightness = packet.payload[0] / 100 * 255 if self._segmented else packet.payload[0]
+                self.brightness = round(packet.payload[0] / 100 * 255) if self._segmented else packet.payload[0]
             case LedPacketCmd.COLOR:
+                mode = packet.payload[0]
                 red = packet.payload[1]
                 green = packet.payload[2]
                 blue = packet.payload[3]
+                if mode == LedColorType.LEGACY and not (red or green or blue):
+                    #LEGACY replies carry no colour on some models (e.g. H613C): keep the last commanded one
+                    return
                 self.color = (red, green, blue)
             case LedPacketCmd.SEGMENT:
                 red = packet.payload[2]
@@ -137,6 +148,7 @@ class GoveeAPI:
             cmd=frame[1],
             payload=frame[2:-1]
         )
+        _LOGGER.debug("Received from %s: %s", self.address, bytes(frame).hex(" "))
         #only requests are expected to send a response
         if packet.head == LedPacketHead.REQUEST:
             await self._handleRequest(packet)
@@ -162,13 +174,16 @@ class GoveeAPI:
                     remaining = int((self._slot_backoff_until - now).total_seconds())
                     _LOGGER.debug("Proxy slot backoff active, skipping for %ds more", remaining)
                     self._packet_buffer = []
+                    self._pending = {}
                     return None
                 self._slot_backoff_until = None
             packets, self._packet_buffer = self._packet_buffer, []
+            pending, self._pending = self._pending, {}
             try:
                 await self._ensureConnected()
                 for packet in packets:
                     await self._transmitPacket(packet)
+                    await asyncio.sleep(_INTER_PACKET_DELAY)
                 self._slot_error_count = 0
             except BleakOutOfConnectionSlotsError:
                 self._slot_error_count += 1
@@ -190,6 +205,11 @@ class GoveeAPI:
                     except Exception:
                         pass
                 raise
+        if pending:
+            #show commanded values right away; replies to the queued requests correct them
+            for attr, value in pending.items():
+                setattr(self, attr, value)
+            await self._update_callback()
 
     async def disconnect(self):
         """ disconnects the BLE client, guarded by the same lock as sendPacketBuffer """
@@ -220,18 +240,17 @@ class GoveeAPI:
             #legacy devices
             await self._preparePacket(LedPacketCmd.COLOR, request=True)
     
+    # The setters always send: the cached state can be stale (changes from the Govee app or
+    # remote aren't pushed), and skipping "unchanged" values would silently drop commands.
     async def setStateBuffered(self, state: bool):
         """ adds the state to the transmit buffer """
-        if self.state == state:
-            return None #nothing to do
         #0x1 = ON, Ox0 = OFF
         await self._preparePacket(LedPacketCmd.POWER, [0x1 if state else 0x0])
         await self.requestStateBuffered()
-    
+        self._pending["state"] = state
+
     async def setBrightnessBuffered(self, brightness: int):
         """ adds the brightness to the transmit buffer """
-        if self.brightness == brightness:
-            return None #nothing to do
         #legacy devices 0-255
         payload = round(brightness)
         if self._segmented:
@@ -239,11 +258,10 @@ class GoveeAPI:
             payload = round(brightness / 255 * 100)
         await self._preparePacket(LedPacketCmd.BRIGHTNESS, [payload])
         await self.requestBrightnessBuffered()
-        
+        self._pending["brightness"] = brightness
+
     async def setColorBuffered(self, red: int, green: int, blue: int):
         """ adds the color to the transmit buffer """
-        if self.color == (red, green, blue):
-            return None #nothing to do
         if self._segmented:
             await self._preparePacket(LedPacketCmd.COLOR, [LedColorType.SEGMENTS, 0x01, red, green, blue, 0, 0, 0, 0, 0, 0xff, 0xff])
         else:
@@ -251,3 +269,4 @@ class GoveeAPI:
             await self._preparePacket(LedPacketCmd.COLOR, [LedColorType.SINGLE, red, green, blue])
             await self._preparePacket(LedPacketCmd.COLOR, [LedColorType.LEGACY, red, green, blue])
         await self.requestColorBuffered()
+        self._pending["color"] = (red, green, blue)
