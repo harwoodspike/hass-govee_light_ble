@@ -1,4 +1,5 @@
 import asyncio
+import re
 import bleak_retry_connector
 from bleak_retry_connector import BleakOutOfConnectionSlotsError
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -31,22 +32,34 @@ _INTER_PACKET_DELAY = 0.05
 # After a command, replies that contradict it are treated as stale (answers to requests
 # queued before it; the device repeats each reply several times) until this expires.
 _STALE_REPLY_WINDOW = timedelta(seconds=3)
+# Models whose LEGACY (0x0D) colour reply is always 0,0,0 even though the colour
+# renders correctly, so a zeroed reply there means "not reported", not black.
+_LEGACY_COLOR_UNREPORTED_MODELS = frozenset({"H613C"})
+
+
+def model_from_name(name: str | None) -> str | None:
+    """ Govee model (e.g. H613C) from a BLE name such as ihoment_H613C_20F8 """
+    match = re.search(r"(?<![0-9A-Z])(H[0-9]{3}[0-9A-Z])(?![0-9A-Z])", (name or "").upper())
+    return match.group(1) if match else None
 
 class GoveeAPI:
     state: bool | None = None
     brightness: int | None = None
     color: tuple[int, ...] | None = None
 
-    def __init__(self, hass: HomeAssistant, ble_device: BLEDevice, update_callback, segmented: bool = False):
+    def __init__(self, hass: HomeAssistant, ble_device: BLEDevice, update_callback, segmented: bool = False, model: str | None = None):
         self._conn = None
         self._hass = hass
         self._ble_device = ble_device
         self._segmented = segmented
+        self._legacy_color_unreported = model in _LEGACY_COLOR_UNREPORTED_MODELS
         self._packet_buffer = []
         # values from buffered commands, applied once the buffer is actually transmitted
         self._pending: dict[str, object] = {}
         # last commanded values and until when contradicting replies are ignored
         self._expected: dict[str, tuple[object, datetime]] = {}
+        # values the device reported while the current buffer was being sent
+        self._answered: set[str] = set()
         self._client = None
         self._connected_at: datetime | None = None
         self._update_callback = update_callback
@@ -125,11 +138,13 @@ class GoveeAPI:
             return False  #a newer command for this value is queued
         expected = self._expected.get(attr)
         if expected is None:
+            self._answered.add(attr)
             return True
         target, until = expected
         matches = (abs(value - target) <= 3) if attr == "brightness" else value == target
         if matches or datetime.now() > until:
             del self._expected[attr]
+            self._answered.add(attr)
             return True
         return False
 
@@ -150,8 +165,8 @@ class GoveeAPI:
                 red = packet.payload[1]
                 green = packet.payload[2]
                 blue = packet.payload[3]
-                if mode == LedColorType.LEGACY and not (red or green or blue):
-                    #LEGACY replies carry no colour on some models (e.g. H613C): keep the last commanded one
+                if mode == LedColorType.LEGACY and self._legacy_color_unreported and not (red or green or blue):
+                    #this model's LEGACY replies carry no colour: keep the last commanded one
                     return
                 if self._acceptReply("color", (red, green, blue)):
                     self.color = (red, green, blue)
@@ -212,6 +227,7 @@ class GoveeAPI:
             until = datetime.now() + _STALE_REPLY_WINDOW
             for attr, value in pending.items():
                 self._expected[attr] = (value, until)
+            self._answered = set()
             try:
                 await self._ensureConnected()
                 for packet in packets:
@@ -243,9 +259,12 @@ class GoveeAPI:
                         pass
                 raise
         if pending:
-            #show commanded values right away; replies to the queued requests correct them
+            #show commanded values right away, except ones the device already reported during
+            #the send (e.g. segmented brightness 129 goes out as 51% and reads back as 130);
+            #replies to the queued requests correct the rest
             for attr, value in pending.items():
-                setattr(self, attr, value)
+                if attr not in self._answered:
+                    setattr(self, attr, value)
             if not self._pending:
                 #only publish the latest command: while a slider is dragged newer values are
                 #already queued, and publishing this one would yank the slider back

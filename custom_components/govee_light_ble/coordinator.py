@@ -14,7 +14,7 @@ from homeassistant.components.bluetooth import (
 )
 
 from .const import DOMAIN
-from .api import GoveeAPI
+from .api import GoveeAPI, model_from_name
 
 import logging
 _LOGGER = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
             connectable=False
         )
         assert ble_device
-        self._api = GoveeAPI(hass, ble_device, self._async_push_data, self.device_segmented)
+        self._api = GoveeAPI(hass, ble_device, self._async_push_data, self.device_segmented, model_from_name(self.device_name))
 
         config_entry.async_on_unload(
             bluetooth.async_register_callback(
