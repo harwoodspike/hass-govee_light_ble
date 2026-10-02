@@ -14,7 +14,7 @@ from homeassistant.components.bluetooth import (
 )
 
 from .const import DOMAIN
-from .api import GoveeAPI
+from .api import GoveeAPI, model_from_name
 
 import logging
 _LOGGER = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class GoveeCoordinator(DataUpdateCoordinator):
             connectable=False
         )
         assert ble_device
-        self._api = GoveeAPI(hass, ble_device, self._async_push_data, self.device_segmented)
+        self._api = GoveeAPI(hass, ble_device, self._async_push_data, self.device_segmented, model_from_name(self.device_name))
 
         config_entry.async_on_unload(
             bluetooth.async_register_callback(
@@ -94,6 +94,12 @@ class GoveeCoordinator(DataUpdateCoordinator):
         await self._api.requestColorBuffered()
         await self._api.sendPacketBuffer()
         return self._get_data()
+
+    async def restoreColor(self, color: tuple[int, int, int]):
+        """Seed the colour from a restored state if the device hasn't reported one."""
+        if self._api.color is None:
+            self._api.color = color
+            self.async_set_updated_data(self._get_data())
 
     async def setStateBuffered(self, state: bool):
         await self._api.setStateBuffered(state)
