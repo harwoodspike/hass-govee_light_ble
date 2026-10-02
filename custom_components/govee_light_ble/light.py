@@ -93,6 +93,10 @@ class GoveeBluetoothLight(CoordinatorEntity, LightEntity, RestoreEntity):
         if ATTR_RGB_COLOR in kwargs:
             red, green, blue = kwargs.get(ATTR_RGB_COLOR)
             await self.coordinator.setColorBuffered(red, green, blue)
+        elif self.coordinator.data.color is not None:
+            #some models (e.g. H613C) stay dark after a bare power-on until a colour is sent
+            red, green, blue = self.coordinator.data.color
+            await self.coordinator.setColorBuffered(red, green, blue)
         
         await self.coordinator.sendPacketBuffer()
 
