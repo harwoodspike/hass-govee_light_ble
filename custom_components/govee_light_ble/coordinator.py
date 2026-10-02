@@ -95,6 +95,12 @@ class GoveeCoordinator(DataUpdateCoordinator):
         await self._api.sendPacketBuffer()
         return self._get_data()
 
+    async def restoreColor(self, color: tuple[int, int, int]):
+        """Seed the colour from a restored state if the device hasn't reported one."""
+        if self._api.color is None:
+            self._api.color = color
+            self.async_set_updated_data(self._get_data())
+
     async def setStateBuffered(self, state: bool):
         await self._api.setStateBuffered(state)
 

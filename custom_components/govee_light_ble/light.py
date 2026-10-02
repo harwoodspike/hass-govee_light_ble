@@ -7,6 +7,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.components.light import (ColorMode, LightEntity, ATTR_BRIGHTNESS, ATTR_RGB_COLOR)
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .api import GoveeAPI
 from .const import DOMAIN
@@ -34,7 +35,7 @@ async def async_setup_entry(
     ], True)
 
 
-class GoveeBluetoothLight(CoordinatorEntity, LightEntity):
+class GoveeBluetoothLight(CoordinatorEntity, LightEntity, RestoreEntity):
 
     _attr_supported_color_modes = {ColorMode.RGB}
     _attr_color_mode = ColorMode.RGB
@@ -51,6 +52,15 @@ class GoveeBluetoothLight(CoordinatorEntity, LightEntity):
             serial_number=coordinator.device_address,
             identifiers={(DOMAIN, coordinator.device_address)}
         )
+
+    async def async_added_to_hass(self) -> None:
+        """Start from the last known colour when the device doesn't report one."""
+        await super().async_added_to_hass()
+        #e.g. the H613C answers colour requests with zeros, so its colour only exists in HA
+        if self.coordinator.data.color is None and (last_state := await self.async_get_last_state()):
+            rgb = last_state.attributes.get(ATTR_RGB_COLOR)
+            if rgb:
+                await self.coordinator.restoreColor(tuple(rgb))
 
     @callback
     def _handle_coordinator_update(self) -> None:
