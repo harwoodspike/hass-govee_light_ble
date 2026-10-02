@@ -16,9 +16,6 @@ from .coordinator import GoveeCoordinator
 import logging
 _LOGGER = logging.getLogger(__name__)
 
-def num_to_range(num, inMin, inMax, outMin, outMax):
-    return outMin + (float(num - inMin) / float(inMax - inMin) * (outMax - outMin))
-
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -86,15 +83,16 @@ class GoveeBluetoothLight(CoordinatorEntity, LightEntity, RestoreEntity):
         await self.coordinator.setStateBuffered(True)
 
         if ATTR_BRIGHTNESS in kwargs:
-            brightness = kwargs.get(ATTR_BRIGHTNESS, 255) #1-255
-            brightness_mapped = num_to_range(brightness, 1, 255, 0, 255) #mapping from 1-255 to 0-255
-            await self.coordinator.setBrightnessBuffered(round(brightness_mapped))
+            #HA brightness is 1-255; pass it through unchanged so the reported value matches what was set
+            brightness = max(1, min(255, round(kwargs.get(ATTR_BRIGHTNESS, 255))))
+            await self.coordinator.setBrightnessBuffered(brightness)
 
         if ATTR_RGB_COLOR in kwargs:
             red, green, blue = kwargs.get(ATTR_RGB_COLOR)
             await self.coordinator.setColorBuffered(red, green, blue)
         elif self.coordinator.data.color is not None:
-            #some models (e.g. H613C) stay dark after a bare power-on until a colour is sent
+            #some models (e.g. H613C) only update their LEDs when a colour arrives: a bare power-on
+            #stays dark and a brightness change is stored but not shown, so re-send the colour
             red, green, blue = self.coordinator.data.color
             await self.coordinator.setColorBuffered(red, green, blue)
         
